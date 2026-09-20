@@ -1,41 +1,50 @@
 ---
 name: excel-score-report
-description: Generate a paginated student exam score PDF from a Chinese item-level score Excel workbook with the hosted 小题分报告生成器. Use for 小题分、逐题得分、成绩条, or one-student-per-page PDF requests based on the supported workbook template. Do not use for generic Excel-to-PDF conversion or grade analysis.
+description: Generate a paginated student exam score PDF entirely offline from a Chinese item-level score Excel workbook. Use for 小题分、逐题得分、成绩条, or one-student-per-page PDF requests based on the bundled template. Do not use for generic Excel-to-PDF conversion or grade analysis.
 ---
 
 # Excel Score Report
 
-Turn a compatible exam score workbook into one landscape PDF with one page per student by using <https://excel-score-pdf.vercel.app>.
+Use the bundled Node.js converter to turn a compatible `.xlsx` or `.xls` workbook into one landscape PDF with one page per student. The converter, Excel template, JavaScript libraries, and Chinese font are all included in this skill.
 
-## Inputs
+Run the bundled converter directly. Never use browser automation, fetch a font, or upload the workbook to an online service. Runtime processing must remain local.
 
-Resolve these from the request and workspace before asking questions:
+## Generate a report
 
-- Source `.xlsx` or `.xls` workbook.
-- Optional report title. The site defaults to the workbook filename.
-- Optional output path. Otherwise, save beside the source workbook with the chosen title.
+Resolve the directory containing this `SKILL.md`, then run:
 
-If workbook compatibility is uncertain, read [references/input-format.md](references/input-format.md) before opening the site.
+```bash
+node "<skill-directory>/scripts/generate-report.cjs" "<input.xlsx>" --output "<output.pdf>" --title "<report title>"
+```
 
-## Workflow
+- Require Node.js 18 or newer. Do not run `npm install`; runtime dependencies are vendored.
+- Omit `--title` to use the workbook filename.
+- Omit `--output` to save beside the workbook. If that default filename exists, the script chooses a numbered filename instead of overwriting it.
+- Use `--force` only when the user explicitly asked to replace an existing output.
+- Preserve the input workbook unchanged.
 
-1. Confirm the source file exists and preserve it unchanged.
-2. Open the hosted generator in a browser that supports file upload and download.
-3. Upload the workbook through the upload area.
-4. Set `PDF 标题` only when the user supplied a title or asked for a different one.
-5. Select `生成 PDF` and wait for either `下载 PDF` or a visible error.
-6. Download the result and move or rename it to the requested output path when needed.
-7. Verify that the result exists, is non-empty, begins with the PDF signature, and—when a PDF inspection tool is available—has one page per parsed student.
-8. Return the final file path, title, and parsed student count. Mention skipped blank-name rows or workbook-format problems when relevant.
+The command prints a JSON result. Treat the job as complete only when:
 
-## Operational Constraints
+- `offline` is `true` and `engine` is `node`.
+- `pages` equals `students`.
+- The reported output exists, is non-empty, and begins with `%PDF-`.
 
-- The current application processes the workbook in the browser; do not upload it to a different conversion service.
-- Use only the first worksheet. Do not merge sheets or silently reinterpret columns.
-- Do not change question counts, scores, student names, or class names to make an incompatible workbook pass.
-- If the browser cannot upload or download files, give the user the hosted URL and the exact compatibility issue instead of substituting an unrelated converter.
-- The generator downloads a Chinese font at runtime. Retry once after a transient font-loading failure, then report the failure clearly.
+If workbook compatibility is uncertain, read [references/input-format.md](references/input-format.md) before running the converter.
 
-## Template Requests
+## Provide the template
 
-When the user needs a blank workbook, use the site's `下载模板` link or <https://excel-score-pdf.vercel.app/%E6%A8%A1%E6%9D%BF.xlsx>. Explain the required rows and columns using [references/input-format.md](references/input-format.md).
+Copy the bundled template without using the network:
+
+```bash
+node "<skill-directory>/scripts/generate-report.cjs" --copy-template "<destination>/模板.xlsx"
+```
+
+Do not recreate the template manually. Use `--force` only when the user explicitly permits replacing an existing file.
+
+## Constraints
+
+- Process only the first worksheet, matching the original web implementation.
+- Keep the fixed mapping of 10 multiple-choice columns, 6 fill-in columns, and the remaining free-response columns.
+- Skip rows with a blank student name; do not invent or remap scores.
+- On a format error, report the exact issue and offer the bundled template.
+- If Node.js is unavailable, report that requirement rather than falling back to an online conversion service.

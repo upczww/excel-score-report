@@ -1,0 +1,4 @@
+*.ttf binary
+*.xlsx binary
+vendor/*.min.js linguist-vendored
+vendor/jspdf.plugin.autotable.js linguist-vendored

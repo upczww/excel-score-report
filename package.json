@@ -1,0 +1,12 @@
+{
+  "name": "excel-score-report-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline Node.js converter bundled with the excel-score-report Codex skill",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node scripts/generate-report.cjs --help"
+  }
+}
