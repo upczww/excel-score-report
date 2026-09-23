@@ -86,6 +86,181 @@ function parseExcel(buffer, fileName) {
   };
 }
 
+const CLASS_HEADER_ALIASES = new Set([
+  '班级', '班别', '班', 'class', 'classname', 'class_name', 'classno', 'classid',
+]);
+const NAME_HEADER_ALIASES = new Set([
+  '姓名', '学生姓名', '学生', '考生', 'name', 'student', 'studentname', 'student_name',
+]);
+const NON_QUESTION_HEADER = /序号|学号|编号|总分|总成绩|总计|合计|排名|名次|备注|评语|total|rank|remark|comment|^id$/i;
+const SUMMARY_NAME = /^(满分|目标分值|分值|总分|平均分|班级平均|合计|最高分|最低分|排名|平均)$/;
+
+function textValue(value) {
+  return value == null ? '' : String(value).trim();
+}
+
+function normalizedHeader(value) {
+  return textValue(value)
+    .toLowerCase()
+    .replace(/[\s_\-–—]/g, '')
+    .replace(/[（(].*?[）)]/g, '');
+}
+
+function findHeader(headers, aliases) {
+  return headers.findIndex((header) => aliases.has(normalizedHeader(header)));
+}
+
+function questionGroup(header) {
+  const value = normalizedHeader(header);
+  if (/选择题|单选|多选|choice|mcq/.test(value)) return 'select';
+  if (/填空题|填充|fill|blank/.test(value)) return 'fill';
+  if (/解答题|计算题|证明题|应用题|主观题|solve|response|subjective/.test(value)) return 'solve';
+  return null;
+}
+
+function isScoreLike(value) {
+  const text = textValue(value);
+  return text === '' || /^(?:[-+]?\d+(?:\.\d+)?|[-+]?\d+(?:\.\d+)?\s*分|满分|目标分值|分值)$/i.test(text);
+}
+
+function looksLikeTargetRow(row, questionColumns, classIndex, nameIndex) {
+  const classValue = textValue(row[classIndex]);
+  const nameValue = textValue(row[nameIndex]);
+  const labelRow = /^(满分|目标分值|分值)$/i.test(classValue) || /^(满分|目标分值|分值)$/i.test(nameValue);
+  if (nameValue && !labelRow) return false;
+  const values = questionColumns.map((column) => row[column]).filter((value) => textValue(value) !== '');
+  if (values.length < 2) return false;
+  return values.filter(isScoreLike).length >= Math.max(2, Math.ceil(values.length * 0.7));
+}
+
+function extractHeaderTarget(header) {
+  const text = textValue(header);
+  if (!/分|满分|score/i.test(text)) return '';
+  const match = text.match(/([-+]?\d+(?:\.\d+)?)\s*分?/i);
+  return match ? `${match[1]}分` : '';
+}
+
+function isStandardWorkbook(data) {
+  if (data.length < 3) return false;
+  const headers = data[0].map(textValue);
+  const targetRow = data[1] || [];
+  return headers[0] === '班级'
+    && headers[1] === '姓名'
+    && headers.length >= 19
+    && !textValue(targetRow[1]);
+}
+
+function uniqueLabels(columns, headers, prefix, count) {
+  const labels = columns.map((column) => textValue(headers[column]) || `${prefix}${column + 1}`);
+  while (labels.length < count) labels.push(`${prefix}${labels.length + 1}`);
+  return labels.slice(0, count);
+}
+
+function standardizeWorkbook(buffer, fileName) {
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error('Excel 文件中没有工作表');
+  const sourceSheet = workbook.Sheets[sheetName];
+  const data = XLSX.utils.sheet_to_json(sourceSheet, { header: 1, defval: '' });
+
+  if (isStandardWorkbook(data)) {
+    return { buffer, changed: false, mapping: null, sourceSheet: sheetName };
+  }
+
+  const headerRowIndex = data.slice(0, Math.min(data.length, 12)).findIndex((row) => {
+    const headers = row.map(textValue);
+    return findHeader(headers, CLASS_HEADER_ALIASES) >= 0 && findHeader(headers, NAME_HEADER_ALIASES) >= 0;
+  });
+  if (headerRowIndex < 0) {
+    throw new Error('未检测到“班级”和“姓名”列；无法安全转换为模板格式');
+  }
+
+  const headers = data[headerRowIndex].map(textValue);
+  const classIndex = findHeader(headers, CLASS_HEADER_ALIASES);
+  const nameIndex = findHeader(headers, NAME_HEADER_ALIASES);
+  const questionColumns = headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ header, index }) => index !== classIndex && index !== nameIndex && header && !NON_QUESTION_HEADER.test(header))
+    .map(({ index }) => index);
+  if (questionColumns.length < 1) throw new Error('未检测到题目列；请检查 Excel 表头');
+
+  let dataStart = headerRowIndex + 1;
+  let targetRow = null;
+  if (data[dataStart] && looksLikeTargetRow(data[dataStart], questionColumns, classIndex, nameIndex)) {
+    targetRow = data[dataStart];
+    dataStart += 1;
+  }
+
+  const groups = { select: [], fill: [], solve: [] };
+  const unclassified = [];
+  for (const column of questionColumns) {
+    const group = questionGroup(headers[column]);
+    if (group) groups[group].push(column);
+    else unclassified.push(column);
+  }
+
+  if (groups.select.length === 0 && groups.fill.length === 0 && groups.solve.length === 0) {
+    groups.select = unclassified.slice(0, 10);
+    groups.fill = unclassified.slice(10, 16);
+    groups.solve = unclassified.slice(16);
+  } else {
+    for (const column of unclassified) {
+      if (groups.select.length < 10) groups.select.push(column);
+      else if (groups.fill.length < 6) groups.fill.push(column);
+      else groups.solve.push(column);
+    }
+  }
+
+  if (groups.select.length > 10) throw new Error(`检测到 ${groups.select.length} 个选择题列，超过模板固定的 10 列`);
+  if (groups.fill.length > 6) throw new Error(`检测到 ${groups.fill.length} 个填空题列，超过模板固定的 6 列`);
+  if (groups.solve.length === 0) throw new Error('未检测到解答题列，无法生成模板格式的报告');
+
+  const selectNames = uniqueLabels(groups.select, headers, '选择题', 10);
+  const fillNames = uniqueLabels(groups.fill, headers, '填空题', 6);
+  const solveNames = groups.solve.map((column, index) => textValue(headers[column]) || `解答题${index + 1}`);
+  const target = (column) => textValue(targetRow && targetRow[column]) || extractHeaderTarget(headers[column]);
+  const solveTargets = groups.solve.map(target);
+  const rows = [
+    ['班级', '姓名', ...selectNames, ...fillNames, ...solveNames],
+    ['', '', ...groups.select.map(target), ...groups.fill.map(target), ...solveTargets],
+  ];
+  const students = [];
+  for (let rowIndex = dataStart; rowIndex < data.length; rowIndex += 1) {
+    const row = data[rowIndex] || [];
+    const name = textValue(row[nameIndex]);
+    if (!name || SUMMARY_NAME.test(name)) continue;
+    const valueAt = (column) => row[column] ?? '';
+    students.push([
+      valueAt(classIndex),
+      name,
+      ...groups.select.map(valueAt),
+      ...groups.fill.map(valueAt),
+      ...groups.solve.map(valueAt),
+    ]);
+  }
+  if (students.length === 0) throw new Error('转换后没有找到学生数据；请确认姓名列和学生行');
+  rows.push(...students);
+
+  const normalizedSheet = XLSX.utils.aoa_to_sheet(rows);
+  const normalizedBook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(normalizedBook, normalizedSheet, '小题分');
+  const normalizedBuffer = XLSX.write(normalizedBook, { bookType: 'xlsx', type: 'buffer' });
+  const mapping = {
+    sourceSheet: sheetName,
+    headerRow: headerRowIndex + 1,
+    sourceClassColumn: headers[classIndex],
+    sourceNameColumn: headers[nameIndex],
+    targetRow: targetRow ? dataStart : null,
+    outputColumns: {
+      select: groups.select.map((column, index) => ({ source: headers[column], output: selectNames[index] })),
+      fill: groups.fill.map((column, index) => ({ source: headers[column], output: fillNames[index] })),
+      solve: groups.solve.map((column, index) => ({ source: headers[column], output: solveNames[index] })),
+    },
+    skippedRows: data.length - dataStart - students.length,
+  };
+  return { buffer: normalizedBuffer, changed: true, mapping, sourceSheet: sheetName };
+}
+
 function hasChinese(text) {
   return /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(text);
 }
@@ -224,6 +399,8 @@ function help() {
 选项:
   -o, --output PATH       输出 PDF 路径；默认与输入文件同目录
   -t, --title TEXT        PDF 标题；默认使用输入文件名
+      --normalized-output PATH
+                          非标准工作簿转换后的模板文件路径；默认自动命名
       --copy-template PATH 复制 Skill 内置的 Excel 模板
       --force             允许覆盖已存在的文件
   -h, --help              显示帮助
@@ -231,7 +408,14 @@ function help() {
 }
 
 function parseArgs(argv) {
-  const options = { input: null, output: null, title: null, copyTemplate: null, force: false };
+  const options = {
+    input: null,
+    output: null,
+    title: null,
+    normalizedOutput: null,
+    copyTemplate: null,
+    force: false,
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -253,6 +437,10 @@ function parseArgs(argv) {
       options.title = nextValue();
     } else if (argument.startsWith('--title=')) {
       options.title = argument.slice('--title='.length);
+    } else if (argument === '--normalized-output') {
+      options.normalizedOutput = nextValue();
+    } else if (argument.startsWith('--normalized-output=')) {
+      options.normalizedOutput = argument.slice('--normalized-output='.length);
     } else if (argument === '--copy-template') {
       options.copyTemplate = nextValue();
     } else if (argument.startsWith('--copy-template=')) {
@@ -335,13 +523,27 @@ function main() {
     fail('只支持 .xlsx 和 .xls 文件');
   }
 
-  const parsed = parseExcel(fs.readFileSync(input), path.basename(input));
+  const rawBuffer = fs.readFileSync(input);
+  const prepared = standardizeWorkbook(rawBuffer, path.basename(input));
+  const parsed = parseExcel(prepared.buffer, path.basename(input));
   if (parsed.students.length === 0) {
     fail('未找到学生数据，请检查 Excel 格式');
   }
 
   const title = options.title && options.title.trim() ? options.title.trim() : parsed.fileName;
   const generated = generatePdf(parsed.students, title);
+  let standardizedOutput = null;
+  if (prepared.changed || options.normalizedOutput) {
+    const requestedNormalized = options.normalizedOutput
+      ? path.resolve(options.normalizedOutput)
+      : path.join(path.dirname(input), `${parsed.fileName}.standardized.xlsx`);
+    standardizedOutput = writeOutput(
+      requestedNormalized,
+      prepared.buffer,
+      options.force,
+      Boolean(options.normalizedOutput),
+    );
+  }
   const requestedOutput = options.output
     ? path.resolve(options.output)
     : path.join(path.dirname(input), `${parsed.fileName}.pdf`);
@@ -359,6 +561,9 @@ function main() {
     pages: generated.pages,
     title,
     sheet: parsed.sheetName,
+    standardized: prepared.changed,
+    standardizedOutput,
+    mapping: prepared.mapping,
     engine: 'node',
     offline: true,
   })}\n`);

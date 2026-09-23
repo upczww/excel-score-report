@@ -1,6 +1,6 @@
 # 小题分报告生成器
 
-`excel-score-report` 是一个完全离线的 Codex Skill。它把符合模板的考试逐题得分 Excel 工作簿，生成为一份每名学生一页的 PDF 成绩报告。
+`excel-score-report` 是一个完全离线的 Codex Skill。它会检测考试逐题得分 Excel 的布局；对可识别的非标准表头先转换为模板格式，再生成每名学生一页的 PDF 成绩报告。
 
 转换逻辑直接来自原 Web 应用的 `parseExcel.ts` 和 `generatePdf.ts`，继续使用 `xlsx`、`jsPDF` 与 `jspdf-autotable`。运行时所需的 JavaScript 库、中文字体和 Excel 模板都已经随仓库发布，不依赖在线应用、浏览器、CDN 或 `npm install`。
 
@@ -36,6 +36,8 @@ node scripts/generate-report.cjs ./成绩表.xlsx \
 ```
 
 脚本同时支持 `.xlsx` 和 `.xls`。没有指定输出路径时，PDF 会生成在输入文件旁边；默认不会覆盖已有文件。
+
+如果输入不是标准模板格式，脚本会在本地生成 `成绩表.standardized.xlsx`，并从转换后的文件生成 PDF。可用 `--normalized-output ./标准化成绩表.xlsx` 指定转换文件路径；命令输出的 JSON 会包含 `mapping`，记录来源列与模板列的对应关系。无法安全识别的布局会直接报错，不会静默错配成绩。
 
 ## 导出内置模板
 

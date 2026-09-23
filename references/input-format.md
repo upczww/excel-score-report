@@ -17,4 +17,8 @@ Question labels come from row 1. Free-response target scores come from row 2, co
 
 The output is one combined, landscape PDF. Each parsed student occupies one page containing the title, name, class, and separate tables for the three question groups.
 
-If a workbook does not match this layout, ask the user to adapt it or copy `assets/模板.xlsx` from the installed skill. Do not guess a column mapping when doing so could assign scores to the wrong questions or students.
+## Recognizable non-standard layouts
+
+The converter can normalize a workbook when the first worksheet contains recognizable aliases for the class and name columns, such as `班别`/`班`/`class` and `学生`/`考生`/`name`. It also recognizes question labels containing `选择题`/`单选`/`多选`, `填空题`, and `解答题`/`计算题`/`证明题`; when labels have no group words, remaining question columns are assigned positionally as 10 select, 6 fill, then free-response columns. A following row containing `满分`/`目标分值` or numeric score-like values is treated as the target row. Summary rows such as `合计` and `平均分` are skipped.
+
+For a normalized input, the command writes a template-shaped workbook (by default `<input>.standardized.xlsx`) and reports a source-to-output `mapping` in JSON before/alongside generating the PDF. Layouts without both class/name columns, without free-response columns, or exceeding the fixed 10 select / 6 fill capacity fail safely. If a workbook is still ambiguous, copy `assets/模板.xlsx` and adapt the data rather than relying on an unsafe guess.
